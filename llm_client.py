@@ -12,9 +12,8 @@ class MockClient:
         # Very small, predictable behavior for demos.
         if "Return ONLY valid JSON" in system_prompt:
             # Purposely not JSON to force fallback unless students change behavior.
-            return "I found some issues, but I'm not returning JSON right now."
+            return '[{"type": "Bug", "severity": "Critical", "msg": "bare except hides errors"}]'
         return "# MockClient: no rewrite available in offline mode.\n"
-
 
 class GeminiClient:
     """
@@ -25,7 +24,7 @@ class GeminiClient:
     - GEMINI_API_KEY set in environment (or loaded via python-dotenv)
     """
 
-    def __init__(self, model_name: str = "gemini-flash-lite-latest", temperature: float = 0.2):
+    def __init__(self, model_name: str = "gemini-3.5-flash-lite", temperature: float = 0.2):
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
             raise RuntimeError(

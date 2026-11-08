@@ -47,3 +47,15 @@ def test_mock_client_forces_llm_fallback_to_heuristics_for_analysis():
     assert any(issue.get("type") == "Code Quality" for issue in result["issues"])
     # Ensure we logged the fallback path
     assert any("Falling back to heuristics" in entry.get("message", "") for entry in result["logs"])
+
+
+
+def test_llm_fix_that_deletes_the_function_is_rejected():
+    # MockClient's fixer returns a single comment line. Before the guardrail this
+    # replaced the whole file; now the agent must reject it and use the heuristic fix.
+    agent = BugHoundAgent(client=MockClient())
+    result = agent.run("def f():\n    print('hi')\n    return True\n")
+
+    assert "def f" in result["fixed_code"]
+    assert "MockClient" not in result["fixed_code"]
+    assert any("Rejected LLM fix" in e["message"] for e in result["logs"])

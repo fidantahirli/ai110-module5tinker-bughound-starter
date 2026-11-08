@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import re
@@ -7,6 +8,9 @@ from reliability.risk_assessor import assess_risk
 
 # Directory where prompt templates live, relative to this file
 PROMPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts")
+
+# Part 2: the only severities the analyzer prompt allows (and the risk scorer understands)
+ALLOWED_SEVERITIES = {"low": "Low", "medium": "Medium", "high": "High"}
 
 
 def _load_prompt(filename: str) -> str:
@@ -114,10 +118,16 @@ class BugHoundAgent:
             self._log("ACT", f"API Error: {str(e)}. Falling back to heuristic fixer.")
             return self._heuristic_fix(code_snippet, issues)
 
-        cleaned = self._strip_code_fences(raw).strip()
+        cleaned = self._strip_code_fences(raw or "").strip()
 
         if not cleaned:
             self._log("ACT", "LLM returned empty output. Falling back to heuristic fixer.")
+            return self._heuristic_fix(code_snippet, issues)
+
+        # Part 4 guardrail: never pass along an AI "fix" that is not a credible rewrite
+        problem = self._validate_llm_fix(code_snippet, cleaned)
+        if problem:
+            self._log("ACT", f"Rejected LLM fix: {problem}. Falling back to heuristic fixer.")
             return self._heuristic_fix(code_snippet, issues)
 
         return cleaned
@@ -174,7 +184,7 @@ class BugHoundAgent:
     # Parsing + utilities
     # ----------------------------
     def _parse_json_array_of_issues(self, text: str) -> Optional[List[Dict[str, str]]]:
-        text = text.strip()
+        text = (text or "").strip()
         parsed = self._try_json_loads(text)
         if isinstance(parsed, list):
             return self._normalize_issues(parsed)
@@ -187,19 +197,59 @@ class BugHoundAgent:
 
         return None
 
-    def _normalize_issues(self, arr: List[Any]) -> List[Dict[str, str]]:
+    def _normalize_issues(self, arr: List[Any]) -> Optional[List[Dict[str, str]]]:
+        """
+        Part 2: strict validation of model output.
+        Every item must be an object with a non-empty "msg" and a severity of
+        Low/Medium/High. If ANY item breaks the rules, reject the whole response
+        (return None) so the agent falls back to heuristics.
+        """
         issues: List[Dict[str, str]] = []
         for item in arr:
             if not isinstance(item, dict):
-                continue
+                return None
+            severity = ALLOWED_SEVERITIES.get(str(item.get("severity", "")).strip().lower())
+            msg = str(item.get("msg", "")).strip()
+            if severity is None or not msg:
+                return None
             issues.append(
                 {
                     "type": str(item.get("type", "Issue")),
-                    "severity": str(item.get("severity", "Unknown")),
-                    "msg": str(item.get("msg", "")).strip(),
+                    "severity": severity,
+                    "msg": msg,
                 }
             )
         return issues
+
+    def _validate_llm_fix(self, original: str, fixed: str) -> Optional[str]:
+        """
+        Part 4 guardrail. Return a reason string if the AI fix should be rejected,
+        or None if it looks like a real rewrite of the original code.
+        """
+        # 1) The fix must be valid Python.
+        try:
+            fixed_tree = ast.parse(fixed)
+        except SyntaxError as e:
+            return f"output is not valid Python ({e.msg})"
+
+        # 2) The fix must keep every function/class the original defined.
+        def defined_names(tree: ast.AST) -> set:
+            return {
+                node.name
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            }
+
+        try:
+            original_names = defined_names(ast.parse(original))
+        except SyntaxError:
+            return None  # can't compare against broken input; let risk scoring handle it
+
+        missing = original_names - defined_names(fixed_tree)
+        if missing:
+            return f"it removed function/class definitions: {', '.join(sorted(missing))}"
+
+        return None
 
     def _try_json_loads(self, s: str) -> Any:
         try:

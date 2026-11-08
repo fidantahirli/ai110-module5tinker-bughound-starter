@@ -1,4 +1,8 @@
+import difflib
 from typing import Dict, List
+
+# Part 3: an auto-applied fix must be small enough that nobody needs to review it.
+MAX_AUTOFIX_CHANGED_LINES = 3
 
 
 def assess_risk(
@@ -81,6 +85,20 @@ def assess_risk(
     # Auto-fix policy
     # ----------------------------
     should_autofix = level == "low"
+
+    # Part 3: even a "low" score is not enough if the fix touched many lines.
+    # Big diffs are where behavior changes hide. Count added + removed lines.
+    changed_lines = sum(
+        1
+        for line in difflib.unified_diff(original_lines, fixed_lines, lineterm="", n=0)
+        if (line.startswith("+") or line.startswith("-"))
+        and not line.startswith(("+++", "---"))
+    )
+    if should_autofix and changed_lines > MAX_AUTOFIX_CHANGED_LINES:
+        should_autofix = False
+        reasons.append(
+            f"Fix changes {changed_lines} lines (limit {MAX_AUTOFIX_CHANGED_LINES} for auto-fix). Human review required."
+        )
 
     if not reasons:
         reasons.append("No significant risks detected.")
